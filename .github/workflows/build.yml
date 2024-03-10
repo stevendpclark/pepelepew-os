@@ -1,0 +1,64 @@
+name: build
+on:
+  pull_request:
+  merge_group:
+  schedule:
+    - cron: '0 15 * * *'  # 3pm UTC everyday (timed against official fedora container pushes)
+  workflow_dispatch:
+
+env:
+  REGISTRY_USER: ${{ github.actor }}
+  REGISTRY_PASSWORD: ${{ github.token }}
+  IMAGE_REGISTRY: ghcr.io/${{ github.repository_owner }}
+
+jobs:
+  build-image:
+    name: main image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+
+      - name: Get Current Fedora Upstream Version
+        run:
+          make ci_upstream_info >> $GITHUB_ENV
+
+      - name: Pull Base Image
+        run:
+          make pull_upstream_image
+
+      - name: Build Image
+        run:
+          make build_image
+
+      - name: Install cosign
+        if: github.event_name != 'pull_request'
+        uses: sigstore/cosign-installer@e1523de7571e31dbe865fd2e80c5c7c23ae71eb4 # v3.4.0
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: redhat-actions/podman-login@9184318aae1ee5034fbfbacc0388acf12669171f # v1.6
+        with:
+          username: ${{ env.REGISTRY_USER }}
+          password: ${{ env.REGISTRY_PASSWORD }}
+          registry: ${{ env.IMAGE_REGISTRY }}
+
+      - name: Publish Image
+        if: github.event_name != 'pull_request'
+        run:
+          make publish_image
+
+      - name: Sign container image
+        if: github.event_name != 'pull_request'
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
+          COSIGN_EXPERIMENTAL: false
+        run: |
+          cosign version
+          make sign_image
+          make verify_signed_image
